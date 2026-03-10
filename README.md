@@ -1,4 +1,4 @@
-# Практики 7–10: Full-Stack (Node.js + Express API + React)
+# Практики 7–10
 
 Этот репозиторий содержит полный стек для практик 7, 8, 9 и 10:
 - Backend: Express API с bcrypt, JWT access/refresh токенами и защищёнными маршрутами.
