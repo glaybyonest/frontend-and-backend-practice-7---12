@@ -2,7 +2,7 @@ import {
   getAccessToken,
   getRefreshToken,
   setTokens,
-  clearTokens
+  clearTokens,
 } from "./auth";
 
 const API_BASE_URL =
@@ -69,6 +69,11 @@ async function parseResponse(response) {
     const error = new Error(message);
     error.status = response.status;
     error.payload = payload;
+
+    if (response.status === 403 && message === "User is blocked") {
+      clearTokens();
+    }
+
     throw error;
   }
 
@@ -130,13 +135,13 @@ export const api = {
     return apiRequest("/api/auth/me", { auth: true });
   },
   listProducts() {
-    return apiRequest("/api/products", { auth: false });
+    return apiRequest("/api/products", { auth: true });
   },
   createProduct(payload) {
     return apiRequest("/api/products", {
       method: "POST",
       body: payload,
-      auth: false
+      auth: true
     });
   },
   getProduct(id) {
@@ -151,6 +156,25 @@ export const api = {
   },
   deleteProduct(id) {
     return apiRequest(`/api/products/${id}`, {
+      method: "DELETE",
+      auth: true
+    });
+  },
+  listUsers() {
+    return apiRequest("/api/users", { auth: true });
+  },
+  getUser(id) {
+    return apiRequest(`/api/users/${id}`, { auth: true });
+  },
+  updateUser(id, payload) {
+    return apiRequest(`/api/users/${id}`, {
+      method: "PUT",
+      body: payload,
+      auth: true
+    });
+  },
+  blockUser(id) {
+    return apiRequest(`/api/users/${id}`, {
       method: "DELETE",
       auth: true
     });

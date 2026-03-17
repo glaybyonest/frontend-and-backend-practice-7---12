@@ -102,7 +102,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -144,6 +145,11 @@ button.danger {
   font-size: 0.9rem;
 }
 
+.success {
+  color: var(--accent-dark);
+  font-size: 0.9rem;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -152,4 +158,24 @@ button.danger {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.list {
+  display: grid;
+  gap: 12px;
+}
+
+.card--selected {
+  border-color: var(--accent);
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+
+.checkbox input {
+  width: auto;
 }

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 
 export default function Products({ user }) {
+  const canCreate = user && ["seller", "admin"].includes(user.role);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -64,7 +65,9 @@ export default function Products({ user }) {
       <div className="grid">
         <div className="card">
           <h2>Products</h2>
-          <p className="muted">Browse and open a product to edit or delete.</p>
+          <p className="muted">
+            Browse products. Sellers can create and edit, admins can also delete.
+          </p>
           {loading && <p>Loading...</p>}
           {error && <div className="error">{error}</div>}
           <div className="grid">
@@ -88,7 +91,7 @@ export default function Products({ user }) {
         </div>
         <div className="card">
           <h2>Create product</h2>
-          {user ? (
+          {canCreate ? (
             <form onSubmit={handleCreate}>
               <div>
                 <label htmlFor="title">Title</label>
@@ -136,7 +139,9 @@ export default function Products({ user }) {
               <button type="submit">Create</button>
             </form>
           ) : (
-            <p className="muted">Login to create products.</p>
+            <p className="muted">
+              Only sellers and admins can create products.
+            </p>
           )}
         </div>
       </div>

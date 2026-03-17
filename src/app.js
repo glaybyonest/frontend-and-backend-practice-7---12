@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { randomUUID } = require("crypto");
@@ -32,9 +32,32 @@ const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "refresh_secret";
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || "15m";
 const REFRESH_TOKEN_TTL = process.env.REFRESH_TOKEN_TTL || "7d";
 
+const ROLES = {
+  USER: "user",
+  SELLER: "seller",
+  ADMIN: "admin",
+};
+
+const ALL_AUTH_ROLES = [ROLES.USER, ROLES.SELLER, ROLES.ADMIN];
+
+const DEFAULT_ADMIN = {
+  email: "admin@example.com",
+  password: "admin12345",
+  first_name: "Local",
+  last_name: "Admin",
+};
+
 const users = [];
 const products = [];
 const refreshTokens = new Map();
+
+function normalizeEmail(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
 
 function toPublicUser(user) {
   return {
@@ -42,13 +65,19 @@ function toPublicUser(user) {
     email: user.email,
     first_name: user.first_name,
     last_name: user.last_name,
+    role: user.role,
+    isBlocked: Boolean(user.isBlocked),
   };
 }
 
 function generateAccessToken(user) {
-  return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_TTL,
-  });
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: user.role },
+    JWT_SECRET,
+    {
+      expiresIn: ACCESS_TOKEN_TTL,
+    }
+  );
 }
 
 function generateRefreshToken(user) {
@@ -56,6 +85,7 @@ function generateRefreshToken(user) {
     {
       sub: user.id,
       email: user.email,
+      role: user.role,
       type: "refresh",
       jti: randomUUID(),
     },
@@ -87,6 +117,57 @@ function getRefreshToken(req) {
   return null;
 }
 
+function findUserById(id) {
+  return users.find((user) => user.id === id);
+}
+
+function revokeRefreshTokensForUser(userId) {
+  for (const [token, session] of refreshTokens.entries()) {
+    if (session.userId === userId) {
+      refreshTokens.delete(token);
+    }
+  }
+}
+
+function getBootstrapAdminConfig() {
+  return {
+    email: normalizeEmail(process.env.ADMIN_EMAIL) || DEFAULT_ADMIN.email,
+    password: process.env.ADMIN_PASSWORD || DEFAULT_ADMIN.password,
+    first_name:
+      normalizeText(process.env.ADMIN_FIRST_NAME) || DEFAULT_ADMIN.first_name,
+    last_name:
+      normalizeText(process.env.ADMIN_LAST_NAME) || DEFAULT_ADMIN.last_name,
+  };
+}
+
+function bootstrapAdmin() {
+  const existingAdmin = users.find((user) => user.role === ROLES.ADMIN);
+  if (existingAdmin) {
+    return existingAdmin;
+  }
+
+  const adminConfig = getBootstrapAdminConfig();
+  const adminUser = {
+    id: randomUUID(),
+    email: adminConfig.email,
+    first_name: adminConfig.first_name,
+    last_name: adminConfig.last_name,
+    password: bcrypt.hashSync(adminConfig.password, 10),
+    role: ROLES.ADMIN,
+    isBlocked: false,
+  };
+
+  users.push(adminUser);
+  return adminUser;
+}
+
+function resetState() {
+  users.length = 0;
+  products.length = 0;
+  refreshTokens.clear();
+  bootstrapAdmin();
+}
+
 function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -104,21 +185,72 @@ function authMiddleware(req, res, next) {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload;
+    const user = findUserById(payload.sub);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    if (user.isBlocked) {
+      revokeRefreshTokensForUser(user.id);
+      return res.status(403).json({ error: "User is blocked" });
+    }
+
+    req.auth = payload;
+    req.user = user;
     return next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
-app.post("/api/auth/register", async (req, res) => {
-  const { email, first_name, last_name, password } = req.body || {};
+function roleMiddleware(allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
 
-  if (!email || !first_name || !last_name || !password) {
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: "Insufficient permissions" });
+    }
+
+    return next();
+  };
+}
+
+function parseBlockedValue(body) {
+  if (!body || typeof body !== "object") {
+    return undefined;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "isBlocked")) {
+    return body.isBlocked;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "blocked")) {
+    return body.blocked;
+  }
+
+  return undefined;
+}
+
+bootstrapAdmin();
+
+app.locals.resetState = resetState;
+app.locals.state = { users, products, refreshTokens };
+app.locals.bootstrapAdminCredentials = getBootstrapAdminConfig();
+
+app.post("/api/auth/register", async (req, res) => {
+  const email = normalizeEmail(req.body && req.body.email);
+  const firstName = normalizeText(req.body && req.body.first_name);
+  const lastName = normalizeText(req.body && req.body.last_name);
+  const password = req.body && req.body.password;
+
+  if (!email || !firstName || !lastName || !password) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
-  const existing = users.find((u) => u.email === email);
+  const existing = users.find((user) => user.email === email);
   if (existing) {
     return res.status(409).json({ error: "Email already exists" });
   }
@@ -127,9 +259,11 @@ app.post("/api/auth/register", async (req, res) => {
   const user = {
     id: randomUUID(),
     email,
-    first_name,
-    last_name,
+    first_name: firstName,
+    last_name: lastName,
     password: passwordHash,
+    role: ROLES.USER,
+    isBlocked: false,
   };
 
   users.push(user);
@@ -138,7 +272,8 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body || {};
+  const email = normalizeEmail(req.body && req.body.email);
+  const { password } = req.body || {};
 
   if (!email || !password) {
     return res
@@ -146,9 +281,14 @@ app.post("/api/auth/login", async (req, res) => {
       .json({ error: "Email and password are required" });
   }
 
-  const user = users.find((u) => u.email === email);
+  const user = users.find((item) => item.email === email);
   if (!user) {
     return res.status(401).json({ error: "Invalid email or password" });
+  }
+
+  if (user.isBlocked) {
+    revokeRefreshTokensForUser(user.id);
+    return res.status(403).json({ error: "User is blocked" });
   }
 
   const isValid = await bcrypt.compare(password, user.password);
@@ -161,16 +301,14 @@ app.post("/api/auth/login", async (req, res) => {
   return res.status(200).json(tokens);
 });
 
-app.get("/api/auth/me", authMiddleware, (req, res) => {
-  const userId = req.user && req.user.sub;
-  const user = users.find((u) => u.id === userId);
-
-  if (!user) {
-    return res.status(404).json({ error: "User not found" });
+app.get(
+  "/api/auth/me",
+  authMiddleware,
+  roleMiddleware(ALL_AUTH_ROLES),
+  (req, res) => {
+    return res.status(200).json(toPublicUser(req.user));
   }
-
-  return res.status(200).json(toPublicUser(user));
-});
+);
 
 app.post("/api/auth/refresh", (req, res) => {
   const refreshToken = getRefreshToken(req);
@@ -184,17 +322,23 @@ app.post("/api/auth/refresh", (req, res) => {
       return res.status(401).json({ error: "Invalid refresh token" });
     }
 
+    const user = findUserById(payload.sub);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    if (user.isBlocked) {
+      refreshTokens.delete(refreshToken);
+      revokeRefreshTokensForUser(user.id);
+      return res.status(403).json({ error: "User is blocked" });
+    }
+
     const stored = refreshTokens.get(refreshToken);
     if (!stored || stored.userId !== payload.sub) {
       return res.status(401).json({ error: "Invalid refresh token" });
     }
 
     refreshTokens.delete(refreshToken);
-
-    const user = users.find((u) => u.id === payload.sub);
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
 
     const tokens = issueTokens(user);
     return res.status(200).json(tokens);
@@ -203,75 +347,266 @@ app.post("/api/auth/refresh", (req, res) => {
   }
 });
 
-app.post("/api/products", (req, res) => {
-  const { title, category, description, price } = req.body || {};
-
-  if (!title || !category || !description || price === undefined) {
-    return res.status(400).json({ error: "All fields are required" });
+app.get(
+  "/api/users",
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  (req, res) => {
+    return res.status(200).json(users.map(toPublicUser));
   }
+);
 
-  if (typeof price !== "number" || Number.isNaN(price)) {
-    return res.status(400).json({ error: "Price must be a number" });
+app.get(
+  "/api/users/:id",
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  (req, res) => {
+    const user = findUserById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    return res.status(200).json(toPublicUser(user));
   }
+);
 
-  const product = {
-    id: randomUUID(),
-    title,
-    category,
-    description,
-    price,
-  };
+app.put(
+  "/api/users/:id",
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  (req, res) => {
+    const user = findUserById(req.params.id);
 
-  products.push(product);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-  return res.status(201).json(product);
-});
+    const email = req.body && Object.prototype.hasOwnProperty.call(req.body, "email")
+      ? normalizeEmail(req.body.email)
+      : undefined;
+    const firstName =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, "first_name")
+        ? normalizeText(req.body.first_name)
+        : undefined;
+    const lastName =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, "last_name")
+        ? normalizeText(req.body.last_name)
+        : undefined;
+    const role =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, "role")
+        ? req.body.role
+        : undefined;
+    const blockedValue = parseBlockedValue(req.body);
 
-app.get("/api/products", (req, res) => {
-  return res.status(200).json(products);
-});
+    if (
+      email === undefined &&
+      firstName === undefined &&
+      lastName === undefined &&
+      role === undefined &&
+      blockedValue === undefined
+    ) {
+      return res.status(400).json({ error: "No fields to update" });
+    }
 
-app.get("/api/products/:id", authMiddleware, (req, res) => {
-  const product = products.find((p) => p.id === req.params.id);
+    if (email !== undefined) {
+      if (!email) {
+        return res.status(400).json({ error: "Email is required" });
+      }
 
-  if (!product) {
-    return res.status(404).json({ error: "Product not found" });
+      const duplicate = users.find(
+        (item) => item.email === email && item.id !== user.id
+      );
+      if (duplicate) {
+        return res.status(409).json({ error: "Email already exists" });
+      }
+
+      user.email = email;
+    }
+
+    if (firstName !== undefined) {
+      if (!firstName) {
+        return res.status(400).json({ error: "First name is required" });
+      }
+      user.first_name = firstName;
+    }
+
+    if (lastName !== undefined) {
+      if (!lastName) {
+        return res.status(400).json({ error: "Last name is required" });
+      }
+      user.last_name = lastName;
+    }
+
+    if (role !== undefined) {
+      if (!ALL_AUTH_ROLES.includes(role)) {
+        return res.status(400).json({ error: "Invalid role" });
+      }
+      user.role = role;
+    }
+
+    if (blockedValue !== undefined) {
+      if (typeof blockedValue !== "boolean") {
+        return res.status(400).json({ error: "isBlocked must be a boolean" });
+      }
+
+      if (user.id === req.user.id && blockedValue) {
+        return res.status(400).json({ error: "Admin cannot block themselves" });
+      }
+
+      user.isBlocked = blockedValue;
+      if (blockedValue) {
+        revokeRefreshTokensForUser(user.id);
+      }
+    }
+
+    return res.status(200).json(toPublicUser(user));
   }
+);
 
-  return res.status(200).json(product);
-});
+app.delete(
+  "/api/users/:id",
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  (req, res) => {
+    const user = findUserById(req.params.id);
 
-app.put("/api/products/:id", authMiddleware, (req, res) => {
-  const product = products.find((p) => p.id === req.params.id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-  if (!product) {
-    return res.status(404).json({ error: "Product not found" });
+    if (user.id === req.user.id) {
+      return res.status(400).json({ error: "Admin cannot block themselves" });
+    }
+
+    user.isBlocked = true;
+    revokeRefreshTokensForUser(user.id);
+
+    return res.status(200).json(toPublicUser(user));
   }
+);
 
-  const { title, category, description, price } = req.body || {};
+app.post(
+  "/api/products",
+  authMiddleware,
+  roleMiddleware([ROLES.SELLER, ROLES.ADMIN]),
+  (req, res) => {
+    const title = normalizeText(req.body && req.body.title);
+    const category = normalizeText(req.body && req.body.category);
+    const description = normalizeText(req.body && req.body.description);
+    const { price } = req.body || {};
 
-  if (price !== undefined && (typeof price !== "number" || Number.isNaN(price))) {
-    return res.status(400).json({ error: "Price must be a number" });
+    if (!title || !category || !description || price === undefined) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    if (typeof price !== "number" || Number.isNaN(price)) {
+      return res.status(400).json({ error: "Price must be a number" });
+    }
+
+    const product = {
+      id: randomUUID(),
+      title,
+      category,
+      description,
+      price,
+    };
+
+    products.push(product);
+
+    return res.status(201).json(product);
   }
+);
 
-  if (title !== undefined) product.title = title;
-  if (category !== undefined) product.category = category;
-  if (description !== undefined) product.description = description;
-  if (price !== undefined) product.price = price;
-
-  return res.status(200).json(product);
-});
-
-app.delete("/api/products/:id", authMiddleware, (req, res) => {
-  const index = products.findIndex((p) => p.id === req.params.id);
-
-  if (index === -1) {
-    return res.status(404).json({ error: "Product not found" });
+app.get(
+  "/api/products",
+  authMiddleware,
+  roleMiddleware(ALL_AUTH_ROLES),
+  (req, res) => {
+    return res.status(200).json(products);
   }
+);
 
-  products.splice(index, 1);
-  return res.status(204).send();
-});
+app.get(
+  "/api/products/:id",
+  authMiddleware,
+  roleMiddleware(ALL_AUTH_ROLES),
+  (req, res) => {
+    const product = products.find((item) => item.id === req.params.id);
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    return res.status(200).json(product);
+  }
+);
+
+app.put(
+  "/api/products/:id",
+  authMiddleware,
+  roleMiddleware([ROLES.SELLER, ROLES.ADMIN]),
+  (req, res) => {
+    const product = products.find((item) => item.id === req.params.id);
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    const title =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, "title")
+        ? normalizeText(req.body.title)
+        : undefined;
+    const category =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, "category")
+        ? normalizeText(req.body.category)
+        : undefined;
+    const description =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, "description")
+        ? normalizeText(req.body.description)
+        : undefined;
+    const { price } = req.body || {};
+
+    if (title !== undefined && !title) {
+      return res.status(400).json({ error: "Title cannot be empty" });
+    }
+
+    if (category !== undefined && !category) {
+      return res.status(400).json({ error: "Category cannot be empty" });
+    }
+
+    if (description !== undefined && !description) {
+      return res.status(400).json({ error: "Description cannot be empty" });
+    }
+
+    if (price !== undefined && (typeof price !== "number" || Number.isNaN(price))) {
+      return res.status(400).json({ error: "Price must be a number" });
+    }
+
+    if (title !== undefined) product.title = title;
+    if (category !== undefined) product.category = category;
+    if (description !== undefined) product.description = description;
+    if (price !== undefined) product.price = price;
+
+    return res.status(200).json(product);
+  }
+);
+
+app.delete(
+  "/api/products/:id",
+  authMiddleware,
+  roleMiddleware([ROLES.ADMIN]),
+  (req, res) => {
+    const index = products.findIndex((item) => item.id === req.params.id);
+
+    if (index === -1) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    products.splice(index, 1);
+    return res.status(204).send();
+  }
+);
 
 if (require.main === module) {
   app.listen(PORT, () => {

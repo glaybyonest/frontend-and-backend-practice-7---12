@@ -39,6 +39,12 @@ export default function Me({ user, onRefresh }) {
             <p>
               <strong>Last name:</strong> {user.last_name}
             </p>
+            <p>
+              <strong>Role:</strong> {user.role}
+            </p>
+            <p>
+              <strong>Status:</strong> {user.isBlocked ? "Blocked" : "Active"}
+            </p>
           </div>
         ) : (
           <p className="muted">No user data loaded.</p>

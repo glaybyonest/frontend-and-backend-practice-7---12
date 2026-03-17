@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 
-export default function ProductDetails() {
+export default function ProductDetails({ user }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const canEdit = user && ["seller", "admin"].includes(user.role);
+  const canDelete = user && user.role === "admin";
   const [product, setProduct] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -97,60 +99,71 @@ export default function ProductDetails() {
                 <strong>${product.price}</strong>
               </p>
             </div>
-            <div className="card">
-              <h3>Update product</h3>
-              <form onSubmit={handleUpdate}>
-                <div>
-                  <label htmlFor="title">Title</label>
-                  <input
-                    id="title"
-                    name="title"
-                    value={form.title}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="category">Category</label>
-                  <input
-                    id="category"
-                    name="category"
-                    value={form.category}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="description">Description</label>
-                  <textarea
-                    id="description"
-                    name="description"
-                    value={form.description}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="price">Price</label>
-                  <input
-                    id="price"
-                    name="price"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.price}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div className="inline">
-                  <button type="submit">Save changes</button>
-                  <button
-                    className="danger"
-                    type="button"
-                    onClick={handleDelete}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </form>
-            </div>
+            {canEdit ? (
+              <div className="card">
+                <h3>Update product</h3>
+                <form onSubmit={handleUpdate}>
+                  <div>
+                    <label htmlFor="title">Title</label>
+                    <input
+                      id="title"
+                      name="title"
+                      value={form.title}
+                      onChange={handleChange}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="category">Category</label>
+                    <input
+                      id="category"
+                      name="category"
+                      value={form.category}
+                      onChange={handleChange}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="description">Description</label>
+                    <textarea
+                      id="description"
+                      name="description"
+                      value={form.description}
+                      onChange={handleChange}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="price">Price</label>
+                    <input
+                      id="price"
+                      name="price"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.price}
+                      onChange={handleChange}
+                    />
+                  </div>
+                  <div className="inline">
+                    <button type="submit">Save changes</button>
+                    {canDelete && (
+                      <button
+                        className="danger"
+                        type="button"
+                        onClick={handleDelete}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </form>
+              </div>
+            ) : (
+              <div className="card">
+                <h3>Permissions</h3>
+                <p className="muted">
+                  This product is read-only for the current role.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
